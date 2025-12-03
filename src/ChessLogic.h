@@ -122,8 +122,13 @@ private:
     
     // 终局计算
     void countTerritory();
+    void findTerritory(int row, int col, bool visited[][BOARD_SIZE], 
+                       std::vector<std::pair<int, int>>& territory,
+                       bool& touchesBlack, bool& touchesWhite);
     void markDeadStones();
     bool isGroupAlive(int row, int col, PieceColor color);
+    bool hasTwoEyes(int row, int col, PieceColor color);
+    bool isEye(int row, int col, PieceColor color);
     
     void switchPlayer();
 };

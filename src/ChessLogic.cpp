@@ -177,9 +177,9 @@ bool ChessLogic::checkGomokuWin(int row, int col)
 
 bool ChessLogic::checkGoWin(int row, int col)
 {
-    // 围棋的胜利判定比较复杂，这里简化为提子数达到一定数量
-    // 实际围棋需要更复杂的规则
-    return (m_capturedBlack >= 10 || m_capturedWhite >= 10);
+    // 围棋的胜利不是通过提子数判定，而是通过终局数子
+    // 这里只检查是否进入终局阶段，实际胜负在calculateScore中确定
+    return false; // 围棋模式下不通过checkWin判定胜负
 }
 
 // 围棋相关方法实现
@@ -458,21 +458,40 @@ bool ChessLogic::isKoViolation(int row, int col) const
            m_currentKo.koColor == m_currentPlayer; // 当前玩家不能立即提回
 }
 
-// 终局相关
-void ChessLogic::enterScoringPhase()
-{
-    m_gamePhase = GamePhase::Scoring;
-    calculateScore();
-    emit gamePhaseChanged(GamePhase::Scoring);
-}
+// 终局计算
+void countTerritory();
+void findTerritory(int row, int col, bool visited[][BOARD_SIZE], 
+                   std::vector<std::pair<int, int>>& territory,
+                   bool& touchesBlack, bool& touchesWhite);
+void markDeadStones();
+bool isGroupAlive(int row, int col, PieceColor color);
+bool hasTwoEyes(int row, int col, PieceColor color);
+bool isEye(int row, int col, PieceColor color);
 
 void ChessLogic::calculateScore()
 {
     if (m_gameMode != GameMode::Go) return;
     
-    m_blackScore = m_capturedWhite;
-    m_whiteScore = m_capturedBlack + m_settings.komi;
+    // 中国规则：子+目=总子数
+    m_blackScore = 0;
+    m_whiteScore = m_settings.komi; // 贴目
     
+    // 计算棋盘上的棋子数
+    for (int i = 0; i < BOARD_SIZE; ++i) {
+        for (int j = 0; j < BOARD_SIZE; ++j) {
+            if (m_board[i][j] == PieceColor::Black) {
+                m_blackScore++;
+            } else if (m_board[i][j] == PieceColor::White) {
+                m_whiteScore++;
+            }
+        }
+    }
+    
+    // 加上提子数
+    m_blackScore += m_capturedWhite;
+    m_whiteScore += m_capturedBlack;
+    
+    // 计算领地
     countTerritory();
     
     // 判断胜负
@@ -489,36 +508,53 @@ void ChessLogic::calculateScore()
 
 void ChessLogic::countTerritory()
 {
-    // 简化的领地计算
     bool visited[BOARD_SIZE][BOARD_SIZE] = {false};
     
     for (int i = 0; i < BOARD_SIZE; ++i) {
         for (int j = 0; j < BOARD_SIZE; ++j) {
             if (m_board[i][j] == PieceColor::Empty && !visited[i][j]) {
-                // 检查这个空点属于谁的领地
+                // 使用BFS找到连通的空区域
                 std::vector<std::pair<int, int>> territory;
                 bool touchesBlack = false, touchesWhite = false;
                 
-                // 简单的领地判断（需要更复杂的算法）
-                int directions[4][2] = {{0,1}, {1,0}, {0,-1}, {-1,0}};
-                for (auto& dir : directions) {
-                    int ni = i + dir[0];
-                    int nj = j + dir[1];
-                    if (ni >= 0 && ni < BOARD_SIZE && nj >= 0 && nj < BOARD_SIZE) {
-                        if (m_board[ni][nj] == PieceColor::Black) touchesBlack = true;
-                        if (m_board[ni][nj] == PieceColor::White) touchesWhite = true;
-                    }
-                }
+                findTerritory(i, j, visited, territory, touchesBlack, touchesWhite);
                 
+                // 只有被一种颜色包围的空点才算作该方的领地
                 if (touchesBlack && !touchesWhite) {
-                    m_blackScore++;
+                    m_blackScore += territory.size();
                 } else if (touchesWhite && !touchesBlack) {
-                    m_whiteScore++;
+                    m_whiteScore += territory.size();
                 }
-                
-                visited[i][j] = true;
+                // 如果同时接触黑白双方，则为中立区域，不计分
             }
         }
+    }
+}
+
+void ChessLogic::findTerritory(int row, int col, bool visited[][BOARD_SIZE], 
+                              std::vector<std::pair<int, int>>& territory,
+                              bool& touchesBlack, bool& touchesWhite)
+{
+    if (row < 0 || row >= BOARD_SIZE || col < 0 || col >= BOARD_SIZE || visited[row][col]) {
+        return;
+    }
+    
+    visited[row][col] = true;
+    
+    if (m_board[row][col] == PieceColor::Empty) {
+        territory.push_back({row, col});
+        
+        // 检查四个方向
+        int directions[4][2] = {{0,1}, {1,0}, {0,-1}, {-1,0}};
+        for (auto& dir : directions) {
+            int newRow = row + dir[0];
+            int newCol = col + dir[1];
+            findTerritory(newRow, newCol, visited, territory, touchesBlack, touchesWhite);
+        }
+    } else if (m_board[row][col] == PieceColor::Black) {
+        touchesBlack = true;
+    } else if (m_board[row][col] == PieceColor::White) {
+        touchesWhite = true;
     }
 }
 
@@ -588,6 +624,107 @@ int ChessLogic::getByoYomiPeriods(PieceColor color) const
     } else {
         return m_whiteByoYomiPeriods;
     }
+}
+
+void ChessLogic::markDeadStones()
+{
+    // 简化的死子标记：移除无法做出两眼的棋块
+    bool processed[BOARD_SIZE][BOARD_SIZE] = {false};
+    
+    for (int i = 0; i < BOARD_SIZE; ++i) {
+        for (int j = 0; j < BOARD_SIZE; ++j) {
+            if (m_board[i][j] != PieceColor::Empty && !processed[i][j]) {
+                PieceColor color = m_board[i][j];
+                std::vector<std::pair<int, int>> group;
+                findGroup(i, j, color, group);
+                
+                // 标记整个棋块为已处理
+                for (auto& pos : group) {
+                    processed[pos.first][pos.second] = true;
+                }
+                
+                // 如果棋块是死的，从棋盘上移除
+                if (!isGroupAlive(group[0].first, group[0].second, color)) {
+                    for (auto& pos : group) {
+                        m_board[pos.first][pos.second] = PieceColor::Empty;
+                        // 增加对方的提子数
+                        if (color == PieceColor::Black) {
+                            m_capturedBlack++;
+                        } else {
+                            m_capturedWhite++;
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+bool ChessLogic::isGroupAlive(int row, int col, PieceColor color)
+{
+    // 简化的活棋判断：检查是否有两个眼
+    return hasTwoEyes(row, col, color);
+}
+
+bool ChessLogic::hasTwoEyes(int row, int col, PieceColor color)
+{
+    std::vector<std::pair<int, int>> group;
+    findGroup(row, col, color, group);
+    
+    int eyeCount = 0;
+    bool checked[BOARD_SIZE][BOARD_SIZE] = {false};
+    
+    // 检查棋块周围的所有空点
+    for (auto& pos : group) {
+        int directions[4][2] = {{0,1}, {1,0}, {0,-1}, {-1,0}};
+        for (auto& dir : directions) {
+            int eyeRow = pos.first + dir[0];
+            int eyeCol = pos.second + dir[1];
+            
+            if (eyeRow >= 0 && eyeRow < BOARD_SIZE && 
+                eyeCol >= 0 && eyeCol < BOARD_SIZE &&
+                !checked[eyeRow][eyeCol] &&
+                m_board[eyeRow][eyeCol] == PieceColor::Empty) {
+                
+                checked[eyeRow][eyeCol] = true;
+                if (isEye(eyeRow, eyeCol, color)) {
+                    eyeCount++;
+                    if (eyeCount >= 2) {
+                        return true;
+                    }
+                }
+            }
+        }
+    }
+    
+    return false;
+}
+
+bool ChessLogic::isEye(int row, int col, PieceColor color)
+{
+    // 检查一个空点是否为某方的眼
+    // 眼的条件：被同色棋子包围，对手无法在此落子
+    
+    int directions[4][2] = {{0,1}, {1,0}, {0,-1}, {-1,0}};
+    int friendlyCount = 0;
+    
+    for (auto& dir : directions) {
+        int r = row + dir[0];
+        int c = col + dir[1];
+        
+        if (r < 0 || r >= BOARD_SIZE || c < 0 || c >= BOARD_SIZE) {
+            return false; // 边界上的点不太可能是真眼
+        }
+        
+        if (m_board[r][c] == color) {
+            friendlyCount++;
+        } else if (m_board[r][c] != PieceColor::Empty) {
+            return false; // 有对手棋子包围
+        }
+    }
+    
+    // 简化判断：如果被三个或四个同色棋子包围，认为是眼
+    return friendlyCount >= 3;
 }
 
 void ChessLogic::switchPlayer()
