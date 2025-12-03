@@ -15,12 +15,7 @@ qt6_add_executable(ChessGame
         src/ChessLogic.cpp
 )
 
-qt6_add_resources(ChessGame "resources"
-        PREFIX "/"
-        FILES
-        resources/images/black_piece.png
-        resources/images/white_piece.png
-)
+
 
 # 添加 PRIVATE 关键字解决签名冲突问题
 target_link_libraries(ChessGame PRIVATE Qt6::Core Qt6::Widgets)
